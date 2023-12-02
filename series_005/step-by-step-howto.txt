@@ -1,97 +1,73 @@
-#####################################################################
-#                                                                   #
-#           Настройки на удалённом сервере (в моём случае VDS)      #
-#                                                                   #
-#####################################################################
+##############################################
+# Внимание!!! В данном примере не рассматривается
+# настройка систем в плане безопасности!
+# Все запрещающие правила на файере - настраивайте согласно 
+# Вашей политики ИБ!
+
+# Все настройки Вы производите на свой страх и риск, мы не несём ответственности за результаты
+
+# Данная Step-by-step хаутушка прилагается к видео https://youtu.be/57CNINtc5kE
+
+################################################
+# настройки производим на удалённом VDS
+
+# Обновим пакеты и поставим некоторый софт
 
 sudo apt-get update && sudo apt-get upgrade
-sudo apt-get install sudo ufw make git wireguard wireguard-tools tmux
+sudo apt-get install sudo pwgen ufw make git wireguard wireguard-tools tmux
 
-Поднастроим sysctl. Отключим ipv6 и разрешим форвард
-sudo nano /etc/sysctl.conf
 
-Впишем:
+# Поднастроим sysctl. Отключим ipv6 и разрешим форвард
+
+sudo touch /etc/sysctl.d/local.conf
+sudo nano /etc/sysctl.d/local.conf
+
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv4.ip_forward=1
-сохраним и применим
-sudo sysctl -p && sudo reboot
 
-Сгенерируем ключи для WG
-wg genkey | sudo tee /etc/wireguard/private.key
-sudo chmod go= /etc/wireguard/private.key
-sudo cat /etc/wireguard/private.key | wg pubkey | sudo tee /etc/wireguard/public.key
+#Затем
+sudo sysctl --system
 
-посмотрим, как именуются интерфейcы на нашем сервере, запомним:
+
+#####################################
+#Настроим wireguard. Сгенерируем ключи
+
+sudo wg genkey | sudo tee /etc/wireguard/private.key && sudo chmod go= /etc/wireguard/private.key && sudo cat /etc/wireguard/private.key | wg pubkey | sudo tee /etc/wireguard/public.key
+
+#Посмотрим, как именуются интерфеймы на нашем сервере, запомним, эти интерфейсы могут понадобиться для маскардинга:
 sudo ip -br a
 
-
-Создадим конфиг wireguard
+#Создадим конфиг
 
 sudo touch /etc/wireguard/wg0.conf
 sudo nano /etc/wireguard/wg0.conf
 
 [Interface]
-PrivateKey = [PRIVATE_VDS_WG_KEY]
+PrivateKey = [Wireguard_server_private_key]
 Address = 10.255.0.1/30
 ListenPort = 51820
-SaveConfig = false
-MTU = 1300 #<----need updating
-PostUp = ufw route allow in on wg0 out on eth0
-PostUp = iptables -t nat -I POSTROUTING -o eth0 -j MASQUERADE
-PreDown = ufw route delete allow in on wg0 out on eth0
-PreDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+SaveConfig = true
+MTU = 1300 # <----Need update
+PostUp = ufw route allow in on wg0 out on eth0                     #
+PostUp = iptables -t nat -I POSTROUTING -o eth0 -j MASQUERADE      # данные правила нужны, если вы планируете NAT-ить соединения
+PreDown = ufw route delete allow in on wg0 out on eth0             #
+PreDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE     #
+
+[Peer]
+PublicKey = [Wireguard_client_public_key]
+AllowedIPs = 10.255.0.2/32
 
 
-сохраняем конфиг, делаем автозапуск WG, запускаем, проверяем
-sudo systemctl enable wg-quick@wg0.service
-sudo systemctl start wg-quick@wg0.service
-sudo systemctl status wg-quick@wg0.service
+#сохраняем конфиг, делаем автозапуск WG, запускаем, проверяем
 
-на выходе должны увидеть
-● wg-quick@wg0.service - WireGuard via wg-quick(8) for wg0
-     Loaded: loaded (/lib/systemd/system/wg-quick@.service; enabled; vendor preset: enabled)
-     Active: active (exited) since Sat 2023-11-18 16:43:48 UTC; 54s ago
+sudo systemctl enable wg-quick@wg0.service && sudo systemctl start wg-quick@wg0.service && sudo systemctl status wg-quick@wg0.service
 
-В списке интерфейсов ip -br a должен появиться wg0
-wg0              UNKNOWN        10.255.0.1/30
+#########################
+#настроим udp2raw
 
-Установим сервер cloak. Проверяем, не установлен ли go. Нужна версия не меньше 1.17
-go version
-в моём случае он не установлен. Поставим последнюю версию. Идём на сайт https://go.dev/dl/, копируем ссылку, качаем, распаковываем, закидываем по-месту
-
-cd ~
-wget https://go.dev/dl/go1.21.4.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.21.4.linux-amd64.tar.gz
-echo "export PATH=\$PATH:/usr/local/go/bin" | sudo tee -a /etc/profile
-
-Выполним
-
-source /etc/profile
-
-Проверяем
-
-go version
-go version go1.21.4 linux/amd64
-
-Соберём cloak
-cd ~
-git clone https://github.com/cbeuw/Cloak
-cd Cloak
-go get ./...
-make
-
-
-Пакет соберётся в папке build. нам понадобится ck-server
-sudo chown -R root. build
-sudo mv ./build/ck-server /usr/local/bin/ck-server
-sudo mkdir /etc/cloak
+# Создадим пользователя и группу, от которого будет стартовать udp2raw и Cloak
 sudo mkdir /var/lib/vpn
-sudo cp ./example_config/ckserver.json /etc/cloak/ckserver.json.orig
-sudo cp ./example_config/ckserver.json /etc/cloak/ckserver.json
-
-Создадим пользователя и группу, от которого будет стартовать cloak
-
 sudo groupadd vpn-group
 
 sudo useradd \
@@ -99,22 +75,252 @@ sudo useradd \
 --create-home \
 --system \
 --shell /sbin/nologin \
---comment "Cloak VPN user" \
+--comment "VPN user" \
 --groups vpn-group \
 vpn-user
 
-cd /etc/cloak
-Сгенерируем ключи
+# Скачаем бинари и закинем их "по месту"
+cd ~
+mkdir udp2raw
+cd udp2raw
+wget https://github.com/wangyu-/udp2raw/releases/download/20230206.0/udp2raw_binaries.tar.gz
+tar -xzf udp2raw_binaries.tar.gz
+sudo mv udp2raw_amd64  /usr/local/bin/udp2raw_amd64
+cd ~
+rm -rf ~/udp2raw
 
+#Сгенерируем пароль, по нему будет авторизоваться клиент
+pwgen 31 1|base64
+[vash_parol_dlya_udp2raw]=
+
+#Проверяем 
+sudo /usr/local/bin/udp2raw_amd64 -s -l 0.0.0.0:4096 -r 127.0.0.1:51820 -k "[vash_parol_dlya_udp2raw]=" --raw-mode faketcp -g
+
+#видим, какое правило надо создать в iptables, создаём его
+sudo iptables -I INPUT -p tcp -m tcp --dport 4096 -j DROP
+
+#Создадим конфиг
+sudo mkdir /etc/udp2raw
+sudo touch /etc/udp2raw/server.conf
+sudo nano /etc/udp2raw/server.conf
+
+-s
+# Listen address
+-l 0.0.0.0:4096
+# Remote address
+-r 127.0.0.1:51820
+-k [vash_parol_dlya_udp2raw]=
+--raw-mode faketcp
+
+#накинем права
+sudo chown -R vpn-user:vpn-group /etc/udp2raw
+sudo chmod 760 /etc/udp2raw
+sudo chmod 640 /etc/udp2raw/server.conf
+
+#Создадим юнит для автозапуска
+sudo nano /etc/systemd/system/udp2raw-server.service
+
+[Unit]
+Description=UDP_2_RAW service
+After=After=network.target syslog.target auditd.service wg-quick@wg0.service
+StartLimitIntervalSec=0
+
+[Service]
+User=vpn-user
+Group=vpn-group
+Type=simple
+ExecStart=/usr/local/bin/udp2raw_amd64 --conf-file /etc/udp2raw/server.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+# разрешим 
+sudo setcap cap_net_raw+ep /usr/local/bin/udp2raw_amd64
+
+# Сохраняем, активируем, запускаем, проверяем
+sudo systemctl daemon-reload &&   sudo systemctl enable udp2raw-server.service && sudo systemctl start udp2raw-server.service && sudo systemctl status udp2raw-server.service
+ 
+
+
+####################################################
+####################################################
+#Аналогично проделываем на клиенте
+
+# обновляем, ставим пакеты
+sudo apt-get update && sudo apt-get upgrade
+sudo apt-get install sudo pwgen ufw make git wireguard wireguard-tools tmux
+
+#Поднастроим sysctl. Отключим ipv6 и разрешим форвард
+
+sudo touch /etc/sysctl.d/local.conf
+sudo nano /etc/sysctl.d/local.conf
+
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv4.ip_forward=1
+
+# Подхватываем настройки
+sudo sysctl --system
+
+#####################################
+# Настроим wireguard
+
+sudo wg genkey | sudo tee /etc/wireguard/private.key && sudo chmod go= /etc/wireguard/private.key && sudo cat /etc/wireguard/private.key | wg pubkey | sudo tee /etc/wireguard/public.key
+
+#Создадим конфиг
+
+sudo touch /etc/wireguard/wg0.conf
+sudo nano /etc/wireguard/wg0.conf
+
+[Interface]
+PrivateKey = [Wireguard_Client_Private_key]
+Address = 10.255.0.2/30
+ListenPort = 51821
+SaveConfig = true
+MTU = 1300
+
+[Peer]
+PublicKey = [WireGuard_Server_public_key]
+AllowedIPs = 10.255.0.1/32
+Endpoint = 127.0.0.1:51820
+
+# Сохраняем, создаём службу, запускаем, проверяем
+sudo systemctl enable wg-quick@wg0.service && sudo systemctl start wg-quick@wg0.service && sudo systemctl status wg-quick@wg0.service
+
+##############################################
+# Настроим клиента udp2raw
+
+cd ~
+mkdir udp2raw
+cd udp2raw
+wget https://github.com/wangyu-/udp2raw/releases/download/20230206.0/udp2raw_binaries.tar.gz
+tar -xzf udp2raw_binaries.tar.gz
+sudo mv udp2raw_amd64  /usr/local/bin/udp2raw_amd64
+cd ~
+rm -rf ~/udp2raw
+
+# Создадим пользователя vpn-user от имени которого будем запускать сервисы обфускации
+sudo mkdir /var/lib/vpn/
+sudo groupadd vpn-group
+sudo useradd \
+--home-dir /var/lib/vpn/cloak \
+--create-home \
+--system \
+--shell /sbin/nologin \
+--comment "VPN user" \
+--groups vpn-group \
+vpn-user
+
+# Напишем конфиги клиента для udp2raw
+sudo mkdir /etc/udp2raw
+sudo touch /etc/udp2raw/client.conf
+sudo nano /etc/udp2raw/client.conf
+
+-c
+# Listen address
+-l 0.0.0.0:51820
+# Remote address
+-r [Remote_VDS_IP]:4096
+-k [vash_parol_dlya_udp2raw]=
+--raw-mode faketcp
+
+# Накинем права
+sudo chown -R vpn-user:vpn-group /etc/udp2raw
+sudo chmod 760 /etc/udp2raw
+sudo chmod 640 /etc/udp2raw/client.conf
+
+# Проверим
+sudo /usr/local/bin/udp2raw_amd64 --conf-file /etc/udp2raw/client.conf -g
+sudo iptables -I INPUT -p tcp -m tcp --dport 51820 -j DROP
+
+# разрешим
+sudo setcap cap_net_raw+ep /usr/local/bin/udp2raw_amd64
+
+# проверим
+sudo -u vpn-user /usr/local/bin/udp2raw_amd64 --conf-file /etc/udp2raw/client.conf
+
+# Создадим юнит по аналогии с сервером
+
+sudo touch /etc/systemd/system/udp2raw-client.service
+sudo nano /etc/systemd/system/udp2raw-client.service
+
+[Unit]
+Description=UDP_2_RAW service
+After=network.target syslog.target auditd.service wg-quick@wg0.service
+StartLimitIntervalSec=0
+
+[Service]
+User=vpn-user
+Group=vpn-group
+Type=simple
+ExecStart=/usr/local/bin/udp2raw_amd64 --conf-file /etc/udp2raw/client.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+# Сохраняем, активируем, запускаем, проверяем
+sudo systemctl daemon-reload && sudo systemctl enable udp2raw-client.service && sudo systemctl start udp2raw-client.service && sudo systemctl status udp2raw-client.service 
+
+###################################################
+# Проверяем wireguard, радуемся, что всё работает #
+###################################################
+
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#
+#!                                                  !#
+#! Настраиваем альтернативный обфускатор - Cloak    !#
+#!                                                  !#
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#
+
+###########################################
+# Возвращаемся на VDS 
+# 
+# Установим сервер cloak. Проверяем, не установлен ли go. Нужна версия не меньше 1.17
+# в моём случае он не установлен. Поставим последнюю версию. 
+# Идём на сайт https://go.dev/dl/, копируем ссылку, качаем, распаковываем, закидыфваем по-месту
+
+cd ~
+wget https://go.dev/dl/go1.21.4.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.21.4.linux-amd64.tar.gz
+echo "export PATH=\$PATH:/usr/local/go/bin" | sudo tee -a /etc/profile
+
+# Выполним
+source /etc/profile
+
+# Проверяем
+go version
+# Должны увидеть go version go1.21.4 linux/amd64
+
+# Соберём cloak
+cd ~
+git clone https://github.com/cbeuw/Cloak
+cd Cloak
+go get ./...
+make
+
+# Пакет соберётся в папке build. нам понадобится ck-server
+sudo chown -R root. build
+sudo mv ./build/ck-server /usr/local/bin/ck-server
+sudo mkdir /etc/cloak
+sudo cp ./example_config/ckserver.json /etc/cloak/ckserver.json.bak
+sudo cp /etc/cloak/ckserver.json.bak /etc/cloak/ckserver.json
+
+
+#Сгенерируем ключи
+cd /etc/cloak
 sudo ck-server -key
 
-Получим пару приватный-публичный ключи. Они нам понадобятся для клиента
+# Получим пару приватный-публичный ключи. Они нам понадобятся для настроек
 
-Сгенерируем ID админа и пользователя
+# Сгенерируем ID админа и пользователя
 sudo ck-server -uid
 sudo ck-server -uid
 
-первый будет для админа, второй для пользователя. Отредактируем конфиг сервера, приведём к виду
+# первый будет для админа, второй для пользователя. Отредактируем конфиг сервера, приведём к виду
 
 sudo nano /etc/cloak/ckserver.json
 
@@ -130,34 +336,29 @@ sudo nano /etc/cloak/ckserver.json
     ":80"
   ],
   "BypassUID": [
-    "[USER_UID]"
+    "[vash_User_UID_4_cloak]=="
   ],
   "RedirAddr": "google.com",
-  "PrivateKey": "[PRIVATE_KEY]",
-  "AdminUID": "[ADMIN_UID]",
+  "PrivateKey": "[PrivateKey_4_cloak]=",
+  "AdminUID": "[Admin_UID_4_cloak]==",
   "DatabasePath": "/var/lib/vpn/cloak/userinfo.db"
 }
 
-При этом "ProxyBook" - перечень серверов, куда прокировать и по каким протоколам
-    "wg" - имя алгоритмя проксирования, такой же надо прописать на клиенте
-    "udp" - протокол
-    "127.0.0.1:51820" - на какой IP:порт перенаправлять соединения после проксирования. Если wireguard крутится локально - 127.0.0.1 Если cloak - отдельно стоящий сервер, указываем IP удалённого Wireguard сервера, куда пересылать пакеты
-
-Проставим права
+# Проставим права
 sudo chown vpn-user:vpn-group -R /etc/cloak
 sudo chmod 760 /etc/cloak
 sudo chmod 640 /etc/cloak/ckserver.json
 
-Сохраняем, Даем права пользователю vpn-user запускать ck-server открвая порт ниже 1024 без рутовых привелегий
+# Сохраняем, Даем права ck-server открыть порт ниже 1024, проверяем запуск:
 sudo setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/ck-server
 
-Удаляем ненужное
-rm -rf ~/Cloak
-rm ~/go1.21.4.linux-amd64.tar.gz
+# Удаляем ненужное
+rm -rf ~/go1.21.4.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go
 sudo rm -rf ~/go
 
-Создадим сервис автозапуска
+# Создадим сервис автозапуска
+sudo touch /etc/systemd/system/cloak-server.service
 sudo nano /etc/systemd/system/cloak-server.service
 
 [Unit]
@@ -184,278 +385,78 @@ MemoryDenyWriteExecute=true
 [Install]
 WantedBy=multi-user.target
 
-
-Сохраняем, активируем, запускаем, проверяем
+# Сохраняем, активируем, запускаем, проверяем
 sudo systemctl daemon-reload && sudo systemctl enable cloak-server && sudo systemctl start cloak-server && sudo systemctl status cloak-server -l
 
-● cloak-server.service - Cloak server unit
-     Loaded: loaded (/etc/systemd/system/cloak-server.service; enabled; vendor preset: enabled)
-     Active: active (running) since Sat 2023-11-18 17:48:56 UTC; 3ms ago
-
-
-проверяем, открыты ли порты 
-
+#проверяем, открыты ли порты 
 sudo ss -tulpn | grep 443
 
-Настроим файрвол
+#########################################################
+# Настраиваем на клиенте
 
-Отключим IPV6 в UFW
-sudo sed -ie 's/IPV6=yes/IPV6=no/g' /etc/default/ufw
-
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow 3322/tcp
-sudo ufw allow http
-sudo ufw enable
-sudo ufw status
-
-Время на клиенте и сервере должно быть одинаковым!!!
-
-При попытке зайти по IP на ваш VDS, в логах Cloak можно бу дет увидеть
-
-....level=warning msg="decryption/authentication faliure: cipher: message authentication failed" UID= encryptionMethod=0 proxyMethod= remoteAddr=....
-
-Клиент, при этом увидит страничку сайта, который прописан в конфиге. В моём случае это google
-
-
-
-
-#####################################################################
-#                                                                   #
-#  Настройки на локальном сервере (lxc контейнер рядом с UserGate)  #
-#                                                                   #
-#####################################################################
-Создадим lxc-контейнер (к примеру, на Debian, ID=100)
-В консоли ProxMox провалимся в контейнер
-
-lxc-attach 100
-
-Обновимся
-apt-get update && apt-get upgrade
-apt-get install sudo tmux mc
-И по шагам предыдущих настроек установим cloak и wireguard
-
-sudo apt-get install sudo ufw make git wireguard wireguard-tools tmux
-
-Поднастроим sysctl. Отключим ipv6 и разрешим форвард
-sudo nano /etc/sysctl.conf
-
-Впишем:
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv4.ip_forward=1
-
-сохраним и применим
-sudo sysctl -p && sudo reboot
-
-Опять провалимся в контейнер
-lxc-attach 100
- 
-Сгенерируем ключи для WG
-wg genkey | sudo tee /etc/wireguard/private.key
-sudo chmod go= /etc/wireguard/private.key
-sudo cat /etc/wireguard/private.key | wg pubkey | sudo tee /etc/wireguard/public.key
-
-посмотрим, как именуются интерфеймы на нашем сервере, запомним:
-sudo ip -br a
-
-
-Создадим конфиг клиента
-
-sudo touch /etc/wireguard/wg0.conf
-sudo nano /etc/wireguard/wg0.conf
-
-[Interface]
-PrivateKey = [SECOND_SERVER_WG_PRIVATE_KEY]
-Address = 10.255.0.2/30
-ListenPort = 51821
-SaveConfig = true
-MTU = 1300
-
-[Peer]
-PublicKey = [VDS_PUBLIC_WG_KEY]
-AllowedIPs = 10.255.0.1/30
-Endpoint = 127.0.0.1:51820
-
-
-Сохраняем, создаём службу, запускаем, проверяем
-sudo systemctl enable wg-quick@wg0.service
-sudo systemctl start wg-quick@wg0.service
-sudo systemctl status wg-quick@wg0.service
-
-В списке интерфейсов ip -br a должен появиться wg0
-wg0              UNKNOWN        10.255.0.2/30
-
-Установим сервер cloak. Начнём с установки go
+# Установим клиента cloak. Начнём с установки go
 cd ~
 wget https://go.dev/dl/go1.21.4.linux-amd64.tar.gz
 sudo tar -C /usr/local -xzf go1.21.4.linux-amd64.tar.gz
 echo "export PATH=\$PATH:/usr/local/go/bin" | sudo tee -a /etc/profile
 
-Выполним
+# Выполним
 
 source /etc/profile
 
 go version
-go version go1.21.4 linux/amd64
+# Должны увидеть go version go1.21.4 linux/amd64
 
-Соберём cloak
+# Соберём cloak
 cd ~
 git clone https://github.com/cbeuw/Cloak
 cd Cloak
 go get ./...
 make
 
-Пакет соберётся в папке build. нам понадобится, ck-client
+# Пакет соберётся в папке build. нам понадобится, ck-client
 sudo chown -R root. build
 sudo mv ./build/ck-client /usr/local/bin/ck-client
 sudo mkdir /etc/cloak
-sudo mkdir /var/lib/vpn
-sudo cp ./example_config/ckclient.json /etc/cloak/ckclient.json.orig
-sudo cp ./example_config/ckclient.json /etc/cloak/ckclient.json
-
-Создадим пользователя и группу, от которого будет стартовать cloak
-
-sudo groupadd vpn-group
-
-sudo useradd \
---home-dir /var/lib/vpn/cloak \
---create-home \
---system \
---shell /sbin/nologin \
---comment "Cloak VPN user" \
---groups vpn-group \
-vpn-user
+sudo cp ./example_config/ckclient.json /etc/cloak/ckclient.json.bak
+sudo cp /etc/cloak/ckclient.json.bak /etc/cloak/ckclient.json
 
 cd /etc/cloak
 
-Отредактируем конфиг.
+# Отредактируем конфиг.
 sudo nano /etc/cloak/ckclient.json
-
 
 {
   "Transport": "direct",
   "ProxyMethod": "wg",
   "EncryptionMethod": "chacha20-poly1305",
-  "UID": "[USER_UID_from_VDS_CLOAK]",
-  "PublicKey": "[PUBLOC_KEY_from_VDS_CLOAK]",
+  "UID": "[vash_User_UID_4_cloak]==",
+  "PublicKey": "[PublicKey_4_cloak]=",
   "ServerName": "google.com",
   "NumConn": 4,
   "BrowserSig": "chrome",
   "StreamTimeout": 300
 }
 
-Расставим права
+# Накинем права
 sudo chown vpn-user:vpn-group -R /etc/cloak
 sudo chmod 760 /etc/cloak
-sudo chmod 640 /etc/cloak/*
+sudo chmod 640 /etc/cloak/ckclient.json
 
-###### подключимся на VDS сервер, донастроим Wireguard и в консоли посмотрим, что прилетает в Cloack
-sudo nano /etc/wireguard/wg0.conf
-
-[Interface]
-Address = 10.255.0.1/30
-MTU = 1300
-SaveConfig = true
-PostUp = ufw route allow in on wg0 out on eth0
-PostUp = iptables -t nat -I POSTROUTING -o eth0 -j MASQUERADE
-PreDown = ufw route delete allow in on wg0 out on eth0
-PreDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
-ListenPort = 51820
-PrivateKey = [PRIVATE_VDS_WG_KEY]
-
-
-[Peer]
-PublicKey = [SECOND_SERVER_WG_PUBLIC_KEY]
-AllowedIPs = 10.255.0.2/30
-
-сохраняем, рестартуем WG
-sudo systemctl restart wg-quick@wg0.service && sudo systemctl status wg-quick@wg0.service
-Должно получиться
-
-● wg-quick@wg0.service - WireGuard via wg-quick(8) for wg0
-     Loaded: loaded (/lib/systemd/system/wg-quick@.service; enabled; vendor preset: enabled)
-     Active: active (exited) since Sun 2023-11-19 08:07:27 UTC; 20ms ago
-
-Теперь проверим, как отрабатывает cloak
-
-sudo systemctl stop cloak-server.service
-sudo ck-server -c /etc/cloak/ckserver.json
-
-Должно отобразиться
-INFO[2023-11-19T08:12:08Z] Starting standalone mode
-INFO[2023-11-19T08:12:08Z] Listening on :80
-INFO[2023-11-19T08:12:08Z] Listening on :443
-
-########### Вернёмся на клиента, запустим клиента cloak, проверим, что получилось
-sudo ck-client -s [REMOTE_CLOAK_VDS_IP] -p 443 -u -c /etc/cloak/ckclient.json -i 127.0.0.1 -l 51820
-
-#### -i 127.0.0.1 -l 51820 - на этом IP:порту будем принимать wireguard. Если cloak сервер находится не на компе с wireguard, указываем IP, который будет принимать соединения от WG. В консоли увидим 
-
-INFO[0000] Starting standalone mode
-INFO[2023-11-19T08:16:04Z] Listening on UDP 127.0.0.1:51820 for wg client 
-
-Рестартанём WG клиента
-sudo systemctl stop wg-quick@wg0.service
-cd /etc/wireguard/
-sudo wg-quick up wg0
-ping 10.255.0.1
-
-#Получим ответ от сервера
-PING 10.255.0.1 (10.255.0.1) 56(84) bytes of data.
-64 bytes from 10.255.0.1: icmp_seq=1 ttl=64 time=371 ms
-64 bytes from 10.255.0.1: icmp_seq=2 ttl=64 time=99.3 ms
-64 bytes from 10.255.0.1: icmp_seq=2 ttl=64 time=81.5 ms
-64 bytes from 10.255.0.1: icmp_seq=2 ttl=64 time=74.8 ms
-.....
-
-# При этом на сервере появится в консоли 
-INFO[2023-11-19T08:19:57Z] New session                                   UID=[USER_UID] sessionID=2669769759
-
-# на клиенте в консоли 
-INFO[2023-11-19T08:19:57Z] Attempting to start a new session
-INFO[2023-11-19T08:19:57Z] Session 2669769759 established
-
-Но если на клиенте запросить страничку curl-om, в логах сервера увидим:
-*на клиенте
-sudo curl -k https://[внешний IP_вашего_VDS]
-
-даст выхлоп
-<HTML><HEAD><meta http-equiv="content-type" content="text/html;charset=utf-8">
-<TITLE>301 Moved</TITLE></HEAD><BODY>
-<H1>301 Moved</H1>
-......
-
-*на сервере в консоли будет
-decryption/authentication faliure: cipher: message authentication failed  UID= encryptionMethod=0 proxyMethod= remoteAddr="[some_IP]:46319" sessionId=0
-
-*там же на сервере перезапускаем службу cloak, смотрим, чтобы стартанула нормально
-sudo systemctl start cloak-server && sudo systemctl status cloak-server
-
-● cloak-server.service - Cloak server
-     Loaded: loaded (/etc/systemd/system/cloak-server.service; enabled; vendor preset: enabled)
-     Active: active (running) since Sun 2023-11-19 08:47:35 UTC; 6s ago
-
-sudo ss -ntulp|grep 443
-tcp   LISTEN 0      4096               *:443              *:*    users:(("ck-server",pid=3832,fd=9))
-
-
-
-Теперь на клиенте создадим Unit для запуска systemd
+# Теперь на клиенте создадим Unit для запуска systemd
+sudo touch /etc/systemd/system/cloak-client.service
 sudo nano /etc/systemd/system/cloak-client.service
 
 [Unit]
-Description=Cloak server unit
+Description=Cloak client unit
 After=network.target
 StartLimitIntervalSec=0
 
 [Service]
-#AmbientCapabilities = CAP_NET_BIND_SERVICE
-#CapabilityBoundingSet = CAP_NET_BIND_SERVICE
 User=vpn-user
 Group=vpn-group
 Type=simple
-ExecStart=ck-client -s [IP_remote_VDS_cloak] -p 443 -u -c /etc/cloak/ckclient.json -i 127.0.0.1 -l 51820
+ExecStart=ck-client -s [Remote_VDS_IP] -p 443 -u -c /etc/cloak/ckclient.json -i 127.0.0.1 -l 51830
 Restart=always
 # Hardening
 PrivateTmp=true
@@ -467,33 +468,13 @@ MemoryDenyWriteExecute=true
 [Install]
 WantedBy=multi-user.target
 
-Расставим права
-sudo chown vpn-user:vpn-group -R /etc/cloak
-sudo chmod 760 /etc/cloak
-sudo chmod 640 /etc/cloak/*
+# запускаем сервис
+sudo systemctl daemon-reload && sudo systemctl enable cloak-client.service && sudo systemctl start cloak-client.service && sudo systemctl status cloak-client.service
 
-запускаем сервис
-sudo systemctl daemon-reload && sudo systemctl enable cloak-client && sudo systemctl restart cloak-client
-sudo systemctl status cloak-client
+#Проверим, слушается ли порт 51830
+sudo ss -ntulp |grep 51830
 
-Проверим, слушается ли порт 51820
-sudo ss -ntulp |grep 51820
-udp   UNCONN 0      0          127.0.0.1:51820      0.0.0.0:*    users:(("ck-client",pid=6547,fd=3))
-
-рестартанём на клиенте WG
-sudo wg-quick down wg0
-sudo systemctl restart wg-quick@wg0.service && systemctl status wg-quick@wg0.service
-
-● wg-quick@wg0.service - WireGuard via wg-quick(8) for wg0
-     Loaded: loaded (/lib/systemd/system/wg-quick@.service; enabled; vendor preset: enabled)
-     Active: active (exited) since Sun 2023-11-19 08:45:44 UTC; 5s ago
-
-ping 10.255.0.1
-PING 10.255.0.1 (10.255.0.1) 56(84) bytes of data.
-64 bytes from 10.255.0.1: icmp_seq=1 ttl=64 time=64.5 ms
-64 bytes from 10.255.0.1: icmp_seq=2 ttl=64 time=88.1 ms
-64 bytes from 10.255.0.1: icmp_seq=3 ttl=64 time=79.8 ms
-64 bytes from 10.255.0.1: icmp_seq=4 ttl=64 time=71.7 ms
-64 bytes from 10.255.0.1: icmp_seq=5 ttl=64 time=68.8 ms
-64 bytes from 10.255.0.1: icmp_seq=6 ttl=64 time=75.6 ms
-
+###################################################
+# Настраиваем wireguard, на порт 51830            #
+# Проверяем, радуемся, что всё работает           #
+###################################################
