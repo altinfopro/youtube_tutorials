@@ -1,0 +1,34 @@
+# STEP-BY-STEP хаутушка по командам к видео https://www.youtube.com/watch?v=Wt50NkEp8OI
+
+#На каждой ноде кластера поставим ocfs2-tools
+apt-get install ocfs2-tools
+
+# На КАЖДОЙ ноде создадим кластер и добавим в кластер список нод
+o2cb add-cluster SharedVMs
+o2cb add-node SharedVMs node-01 --ip [IP_ноды_01_кластера]
+o2cb add-node SharedVMs node-02 --ip [IP_ноды_02_кластера]
+
+# Проверим конфиг кластера
+cat /etc/ocfs2/cluster.conf
+service o2cb status
+
+# Поднастроим кластер, рестартанём его и проверим статус
+dpkg-reconfigure ocfs2-tools
+service o2cb restart
+service o2cb status
+service o2cb online
+
+# Создадим каталог, куда будем монтировать 
+mkdir /mnt/ocfs
+
+# Подключите iSCSI в ProxMox, посмотрите название диска, как он у вас подтянулся. В моём случае это /dev/sdc
+# при помощи cfdisk создайте раздел (у меня это /dev/sdc1). После создания, отформатируйте раздел под OCFSv2
+# полная информация по ключам на сайте оракла - https://docs.oracle.com/en/operating-systems/oracle-linux/6/admin/ol_create_ocfs2.html
+
+mkfs.ocfs2 -C 64K -T vmstore --fs-feature-level=max-features /dev/sdc1
+
+# После того, как раздел будет отформатирован, можно его монтировать. Монтируйте на КАЖДОЙ ноде proxMox
+mount /dev/sdc1 /ntc/ocfs
+
+# После после монтирования, в настрйках ProxMox добавьте расшареный каталог. Теперь можно использовать его для хранения винтов виртуалок
+# Не забудьте написать unit uatomount в systemd для автоматического монтирования. Обратите внимание, что монтировать надо после старта сервиса iSCSI
